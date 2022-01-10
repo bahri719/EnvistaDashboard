@@ -1,0 +1,613 @@
+function updateSheet(){
+  var dd = SpreadsheetApp.getActive().getSheetByName('Data Dump');
+  var db = SpreadsheetApp.getActive().getSheetByName('DB');
+  if (db.getRange('E2').getValue() != dd.getRange('E2').getValue() ){
+    // initial function for dumping data
+    transferRawData2DataDumpAndAddingOtherItems()
+    exchangingUnknownToNPS()
+    changeTargetRatesOnlyForKK()
+    addingStandardItemToDataDump()
+    addScheduledTimeAndExpectedOutputToDataDump()
+    correctionNameOfSetsOnlyForKK()
+    // ------------
+    calculating3MainMetrics()
+    calculationOEE()
+    insertDowntime_machineTable()
+    // --------------
+    insertingDowntimePivotTable()
+    top5downtime() 
+    // --------------
+    extraxtingMetrics()
+    trend()
+  }
+}
+
+//--------------------------------------------------------------------------------------------------------
+//-----------------------------     TRANSFER DATA TO DATA DUMP SHEET     ---------------------------------
+function transferRawData2DataDumpAndAddingOtherItems() {
+// a fun for transfering data form the sheet that get update from db to data dump sheet
+
+  var spreadsheet = SpreadsheetApp.getActive();
+  var dataDumpSheet = spreadsheet.getSheetByName('Data Dump');
+  var dbSheet = spreadsheet.getSheetByName('DB');
+  // clearing previous data in Data Dump sheet
+  dataDumpSheet.getRange(2,1,dataDumpSheet.getLastRow(),54).clear();
+  // copying data from DB (file that get update from database to Data Dump)
+  dbSheet.getRange(2,1,dbSheet.getLastRow(),36).copyTo(dataDumpSheet.getRange('A2'),SpreadsheetApp.CopyPasteType.PASTE_NORMAL, false);
+};
+//--------------------------------------------------------------------------------------------------------
+//------------------------------     EXCHANGEING UNKNOWN TO NPS     --------------------------------------
+function exchangingUnknownToNPS() {
+  var spreadsheet = SpreadsheetApp.getActive();
+  var dataDumpSheet = spreadsheet.getSheetByName('Data Dump');
+  var tagExchangeArray = dataDumpSheet.getRange('G2:AU').getValues();
+  // var i = 0, aux, duration;
+  // for(i = 2; true; i++){
+  //   aux = dataDumpSheet.getRange(i,7,1,1).getValue();
+  //   if(aux == ''){ break;}
+  //   if (aux == 'unknown'){
+  //     duration = dataDumpSheet.getRange(i,47,1,1).getValue();
+  //     if (duration > 60){
+  //       dataDumpSheet.getRange(i,7,1,1).setValue('notScheduled');
+  //       dataDumpSheet.getRange(i,7,1,1).setBackground('#ffff00');
+  //       dataDumpSheet.getRange(i,8,1,1).setValue('No Production Scheduled');  
+  //       dataDumpSheet.getRange(i,8,1,1).setBackground('#ffff00');
+  //     }
+  //   }
+
+  // }
+  var i = 0, aux, duration;
+  for(i = 2; true; i++){
+    aux = tagExchangeArray[i][0];
+    if(aux == ''){ break;}
+    if (aux == 'unknown'){
+      duration = tagExchangeArray[i][-1];
+      if (duration > 60){
+        dataDumpSheet.getRange(i+2,7,1,1).setValue('notScheduled');
+        dataDumpSheet.getRange(i+2,7,1,1).setBackground('#ffff00');
+        dataDumpSheet.getRange(i+2,8,1,1).setValue('No Production Scheduled');  
+        dataDumpSheet.getRange(i+2,8,1,1).setBackground('#ffff00');
+        dataDumpSheet.getRange(i+2,44,1,1).setValue('changed');
+      }
+    }
+
+  }
+
+};
+//--------------------------------------------------------------------------------------------------------
+//--------------------------     ADDING STANDARD ITEM TO DATA DUMP     -----------------------------------
+function addingStandardItemToDataDump() {
+// a fun. for adding the standard item for all jobs to the data
+
+  var ttimeZone=5; // the time zone that the factory is placed there
+  var i;
+  var dataDumpSheet = SpreadsheetApp.getActive().getSheetByName('Data Dump');
+  numberOfRows = dataDumpSheet.getLastRow() - 1 ;
+  var startTimeArray = dataDumpSheet.getRange(2,5,numberOfRows,1).getValues();
+  var stopTimeArray = dataDumpSheet.getRange(2,6,numberOfRows,1).getValues();
+  var aux = new Array(numberOfRows);
+
+  for (i = 0 ; i < numberOfRows ; i++){
+    var stratt = new Date(startTimeArray[i][0]+(ttimeZone-1)*60000-240000);
+    var stopp = new Date(stopTimeArray[i][0]+(ttimeZone-1)*60000-240000);
+    aux[i] = [stratt, stopp, (stopTimeArray[i][0]-startTimeArray[i][0])/60000];
+  }
+  dataDumpSheet.getRange(2, 45,aux.length,3).setValues(aux);
+};
+
+//--------------------------------------------------------------------------------------------------------
+//------------------------     ADDING SCHEDULED TIME AND EXPECTEDOUTPUT TO DATA DUMP     ------------------
+function addScheduledTimeAndExpectedOutputToDataDump(){
+// a function for adding scheduled time and ecpected output to data dump file that used in calculating OEE
+  var i;
+  var dataDumpSheet = SpreadsheetApp.getActive().getSheetByName('Data Dump');
+  numberOfRows = dataDumpSheet.getLastRow();
+  var pnlCategoryArray = dataDumpSheet.getRange(2,7,numberOfRows,1).getValues();
+  var durationMinArray = dataDumpSheet.getRange(2,47,numberOfRows,1).getValues();
+  var targetRateArray = dataDumpSheet.getRange(2,14,numberOfRows,1).getValues();
+  var exceptedOutputArray=[];
+  for (i=0 ; i < numberOfRows ; i++)
+      if (pnlCategoryArray[i][0] == "producing" || pnlCategoryArray[i][0] == "planned" || pnlCategoryArray[i][0] == "unplanned" || pnlCategoryArray[i][0]== "waiting" || pnlCategoryArray[i][0] == "unknown"){
+        exceptedOutputArray[i] = [targetRateArray[i][0] * durationMinArray[i][0]];
+      }
+      else{
+        exceptedOutputArray[i] = [0];
+      }
+  dataDumpSheet.getRange(2, 53,exceptedOutputArray.length,1).setValues(exceptedOutputArray);
+};
+//--------------------------------------------------------------------------------------------------------
+//--------------------------------     CHANGE TARGAT RATE (ONLY FOR kk)     ------------------------------
+function changeTargetRatesOnlyForKK(){
+//  The target rate in bifrost is incorrect for KK. Before calculation we substitute them with the correct one
+  var i,j;
+  var    dataDumpSheet   = SpreadsheetApp.getActive().getSheetByName('Data Dump');
+  var kk_targetrateSheet = SpreadsheetApp.getActive().getSheetByName('KKTargetrate');
+  //   copy correct value of target rate for SKUs from KKTargetrate sheet
+  var targetRateArray = kk_targetrateSheet.getRange(2,1,kk_targetrateSheet.getLastRow(),6).getValues();
+  var skuArray = dataDumpSheet.getRange(2,11,dataDumpSheet.getLastRow(),1).getValues();
+  for (i=0 ; i < skuArray.length ; i++){
+    if (skuArray[i][0] != ""){
+      for (j = 0; j <targetRateArray.length; j++) {
+          if (skuArray[i][0] == targetRateArray[j][0]){
+            skuArray[i][0] = targetRateArray[j][5];
+            break;
+          }
+      }
+    }
+  }
+  dataDumpSheet.getRange(2, 14,skuArray.length,1).setValues(skuArray);
+};
+//--------------------------------------------------------------------------------------------------------
+//-------------------     CORRECTION NAME OF SETS (ONLY FOR kk AND ENVISTA DASHBOARD)     ----------------
+function correctionNameOfSetsOnlyForKK(){
+//  The name of sets in bifrost is incorrect for KK. Before calculation we substitute them with the correct one
+  var i,aa;
+  var dataDumpSheet = SpreadsheetApp.getActive().getSheetByName('Data Dump');
+  var processGroupArray = dataDumpSheet.getRange(2,4,dataDumpSheet.getLastRow(),1).getValues();
+  for (i=0 ; i < processGroupArray.length ; i++)
+      if (String(processGroupArray[i][0]).split(',').length > 1) processGroupArray[i][0] = String(processGroupArray[i][0]).split(',')[1];
+  dataDumpSheet.getRange(2, 54,processGroupArray.length,1).setValues(processGroupArray);
+};
+// //--------------------------------------------------------------------------------------------------------
+// //-----------------------------     CALCULATING 3 MAIN MATRICS     ---------------------------------------
+function calculating3MainMetrics() {
+// This function add a table that make if possible to calculate the 
+// the main 3 metrics i.e. Teep, Availibility and Uptime
+  var dataDumpSheet = SpreadsheetApp.getActive().getSheetByName('Data Dump');
+  var metricsSheet  = SpreadsheetApp.getActive().getSheetByName('Metrics');
+  var dataDumpRange = dataDumpSheet.getRange('!A1:BB');  // selecting the range of data form Data Dump sheet
+  //  deleting the existance data form Metrics sheet (every things form row 5 downward will be deleted)
+  metricsSheet.getRange(5,1,500,metricsSheet.getMaxColumns()).clear({contentsOnly: true, skipFilteredRows: true});
+  //  adding pivot table
+  main3mericsTable = metricsSheet.getRange('A5').createPivotTable(dataDumpRange); // place of pivot table Metrics->A5
+  //                                                                           and name of pivot table --> main3mericsTable
+  main3mericsTableGroup = main3mericsTable.addRowGroup(27);
+  main3mericsTableGroup.showRepeatedLabels();
+  main3mericsTableGroup = main3mericsTable.addRowGroup(54);
+  main3mericsTableGroup.showRepeatedLabels();
+  main3mericsTableGroup = main3mericsTable.addRowGroup(3);
+  main3mericsTableGroup.showRepeatedLabels();
+  main3mericsTableGroup = main3mericsTable.addRowGroup(11);
+  main3mericsTableGroup = main3mericsTable.addColumnGroup(7);
+  main3mericsTableGroup.showTotals(false);
+  criteria = SpreadsheetApp.newFilterCriteria()
+  .setVisibleValues(['notScheduled', 'planned', 'producing', 'unknown', 'unplanned', 'waiting'])
+  .build();
+  main3mericsTable.addFilter(7, criteria);
+  main3mericsTableValue = main3mericsTable.addPivotValue(47, SpreadsheetApp.PivotTableSummarizeFunction.SUM);
+  //  calculating the 3 main metrics
+  // TEEP
+  metricsSheet.getRange('K6').setValue('TEEP');
+  metricsSheet.getRange('K7').setFormula('=ARRAYFORMULA(IFERROR((G7:G/(E7:E+F7:F+G7:G+H7:H+I7:I+J7:J)),0))');
+  //  Availibility
+  metricsSheet.getRange('L6').setValue('Availibility');
+  metricsSheet.getRange('L7').setFormula('=ARRAYFORMULA(IFERROR((G7:G/(F7:F+G7:G+H7:H+I7:I+J7:J)),0))');
+  //  Uptime
+  metricsSheet.getRange('M6').setValue('Uptime');
+  metricsSheet.getRange('M7').setFormula('=ARRAYFORMULA(IFERROR((G7:G/(G7:G+H7:H+I7:I+J7:J)),0))');
+};
+//--------------------------------------------------------------------------------------------------------
+//-----------------------------------     CALCULATING OEE     --------------------------------------------
+function calculationOEE() {
+  var spreadsheet = SpreadsheetApp.getActive();
+  spreadsheet.setActiveSheet(spreadsheet.getSheetByName('Data Dump'), true);
+  var i;
+//  making an array contain all value in ExpectedOutput (except zero) for using in filter in pivot table
+  // var visibleItemsForExpectedOutput=[];
+  // var cVals = spreadsheet.getRange("BA2:BA").getValues();
+  // var itration = cVals.length 
+  // for (i=1 ; i < itration ; i++){
+  //   var auxVariable = cVals[i][0].toString()
+  //   // var bb = visibleItemsForOutput.includes(auxVariable)
+  //   if (!(auxVariable == "0") && !(visibleItemsForExpectedOutput.includes(auxVariable))){
+  //     visibleItemsForExpectedOutput.push(auxVariable)
+  //   }
+  // }
+//  making an array contain all value in processName (except blank) for using in filter in pivot table
+  var visibleItemsForprocessName=[];
+  var cVals = spreadsheet.getRange("C2:C").getValues();
+  var itration = cVals.length 
+  for (i=1 ; i < itration ; i++){
+    var auxVariable = cVals[i][0].toString()
+    if ((auxVariable.substring(0,3) == 'LTC') && !(visibleItemsForprocessName.includes(auxVariable))){
+      visibleItemsForprocessName.push(auxVariable)
+    }
+  }
+// inserting the pivot table
+  spreadsheet.setActiveSheet(spreadsheet.getSheetByName('Metrics'), true);
+  var sourceData = spreadsheet.getRange('\'Data Dump\'!A1:BB');
+  var pivotTable = spreadsheet.getRange('R5').createPivotTable(sourceData);
+  var pivotValue = pivotTable.addPivotValue(53, SpreadsheetApp.PivotTableSummarizeFunction.SUM);
+  pivotValue = pivotTable.addPivotValue(17, SpreadsheetApp.PivotTableSummarizeFunction.SUM);
+  var pivotGroup = pivotTable.addRowGroup(27);
+  pivotGroup.showRepeatedLabels();
+  pivotGroup = pivotTable.addRowGroup(54);
+  pivotGroup.showRepeatedLabels();
+  pivotGroup = pivotTable.addRowGroup(3);
+  pivotGroup.showRepeatedLabels();
+  pivotGroup = pivotTable.addRowGroup(11);
+  // var criteria = SpreadsheetApp.newFilterCriteria()
+  // .setVisibleValues(visibleItemsForExpectedOutput)
+  // .build();
+  // pivotTable.addFilter(53, criteria);
+  criteria = SpreadsheetApp.newFilterCriteria()
+  .setVisibleValues(visibleItemsForprocessName)
+  .build();
+  pivotTable.addFilter(3, criteria);
+//  entering the columns related to calculating OEE
+  spreadsheet.getRange('X5').activate();
+  spreadsheet.getCurrentCell().setValue('OEE');
+  spreadsheet.getRange('X6').activate();
+  spreadsheet.getCurrentCell().setFormula('=IFERROR(ARRAYFORMULA(W6:W/V6:V))')
+
+ };
+//--------------------------------------------------------------------------------------------------------
+//--------------------------------------      EXTERACTING METRICS      -----------------------------------
+function extraxtingMetrics(){
+  var spreadsheet = SpreadsheetApp.getActive();
+  spreadsheet.setActiveSheet(spreadsheet.getSheetByName('Metrics'), true);
+  var ss = SpreadsheetApp.getActiveSheet();
+  var placeOfAvailibilityForSets=[1,2]
+  var i, j, sw, processMetircsArray, shiftMetircsArray, aux;
+
+  //  getting all values in an array calles main3metricsArry for extracting Metrics
+  var main3metricsArry = spreadsheet.getRange("A7:M").getValues();
+  //  getting all values in an array calles oeeArry for extracting OEEs
+  var oeeArry = spreadsheet.getRange("R6:X").getValues();
+  var itration = main3metricsArry.length 
+
+  //  STEP ONE -- PROCESS GOROUP 1111111111111111111111111111111111111111111111111111111111111111111111111111111111111  
+  //  in first loop we extract the Metrics for ProcessGroup
+  processMetircsArray = [];
+  shiftMetircsArray = [];
+  processMetircsArray.push(['Process Name','Pro.TEEP','Pro.Availibility','Pro.Uptime', 'Pro.OEE'])
+  shiftMetircsArray.push(['Shift','Shi.TEEP','Shi.Availibility','sett.Uptime', 'Shi.OEE'])
+  for (i = 0 ; i < itration ; i++){
+    // checking if we reach the end of table or not
+    if (main3metricsArry[i][1] == "" && main3metricsArry[i][2] == ""){
+      break;
+    }
+    if (main3metricsArry[i][2] == ""){
+      processMetircsArray.push([main3metricsArry[i-2][1],main3metricsArry[i][10],main3metricsArry[i][11],main3metricsArry[i][12]]);
+    }
+  }
+  //  metric related to shift is in the last row which is now in i
+  shiftMetircsArray.push([main3metricsArry[i-3][0], main3metricsArry[i][10],main3metricsArry[i][11],main3metricsArry[i][12]]);
+  main3metricsArry = main3metricsArry.slice(0,i+1);
+  var main3mericsNumbers = i-1;  // Now we know that the last row of this pivot table is i-1
+
+  //  in second loop we extract the OEE for ProcessGroup
+  var processNameList = processMetircsArray.map(function(value,index) { return value[0]; });
+  for (i = 0 ; i < itration ; i++){
+    // checking if we reach the end of table or not
+    if (oeeArry[i][1] == "" && oeeArry[i][2] == ""){
+      break;
+    }
+    if (oeeArry[i][2] == ""){
+      aux = oeeArry[i-2][1]; //  process name
+      try{
+      processMetircsArray[processNameList.indexOf(aux)].push(oeeArry[i][6]);
+      }
+      catch (ex){}
+    }
+  }
+  // OEE of shift is in the last row which is now in i
+  shiftMetircsArray[1].push(oeeArry[i][6]);
+  ss.getRange(5, 27,2,5).setValues(shiftMetircsArray);
+  oeeArry = oeeArry.slice(0,i+1);
+  var oeeNumbers = i-1;  // Now we know that the last row of this piot table is i-1
+  for (i=0 ; i < processMetircsArray.length ; i++){
+    if (processMetircsArray[i].length < 5){
+      processMetircsArray[i].push("");
+    }
+  }
+ 
+  // finding 5 lowest and highest sets by availibility and OEE
+  var auxArray = processMetircsArray.slice(1);
+  for (i = auxArray.length - 1 ; i >= 0; i--){   // in this loop we remove the blank process group and the ones with zero availibility
+    if(auxArray[i][0] == "" || auxArray[i][2] == 0){
+      auxArray.splice(i, 1);   // remove i th enlement 
+    }
+  }
+  // finding 5 lowest availibility --------------
+  auxArray.sort((a,b) => a[2] - b[2]) // sorting by availibility ascending
+  ss.getRange("AB8").setValue('Lowest Availability by Set');
+  ss.getRange(9, 27,1,5).setValues(processMetircsArray.slice(0,1));
+  ss.getRange(10, 27,5,5).setValues(auxArray.slice(0,5));
+  // finding 5 higeh availibility--------------
+  auxArray.sort((a,b) => a[2] - b[2]).reverse(); // sorting by availibility descending
+  ss.getRange("AB17").setValue('Highest Availability by Set');
+  ss.getRange(18, 27,1,5).setValues(processMetircsArray.slice(0,1));
+  ss.getRange(19, 27,5,5).setValues(auxArray.slice(0,5));
+  // finding 5 lowest OEE --------------
+  auxArray.sort((a,b) => a[4] - b[4]) // sorting by availibility ascending
+  ss.getRange("AB26").setValue('Lowest OEE by Set');
+  ss.getRange(27, 27,1,5).setValues(processMetircsArray.slice(0,1));
+  ss.getRange(28, 27,5,5).setValues(auxArray.slice(0,5));
+  // finding 5 higeh OEE--------------
+  auxArray.sort((a,b) => a[4] - b[4]).reverse(); // sorting by availibility descending
+  ss.getRange("AB35").setValue('Highest OEE by Set');
+  ss.getRange(36, 27,1,5).setValues(processMetircsArray.slice(0,1));
+  ss.getRange(37, 27,5,5).setValues(auxArray.slice(0,5));
+  //  writing the all Mertics of process Group
+  var xPositionForProcessGroup = 45  // position of writing the metrics for process groups
+  var yPositionForProcessGroup = 27
+  ss.getRange("AB44").setValue('All metrics for all sets');
+  ss.getRange(xPositionForProcessGroup, yPositionForProcessGroup,processMetircsArray.length,processMetircsArray[0].length).setValues(processMetircsArray);
+
+  //  STEP TWO -- MACHINES 2222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222  
+  //  in third loop we extract the Metrics for Machines  
+  var machineMetircsArray = [];
+  machineMetircsArray.push(['Process Name','Mach.Machine','Mach.TEEP','Mach.Availibility','Mach.Uptime'])
+  for (i = 0 ; i < main3mericsNumbers ; i++){
+    var text = main3metricsArry[i][2]
+    if (text.substring(text.length-5, text.length) == "Total"){
+      machineMetircsArray.push([main3metricsArry[i-1][1], main3metricsArry[i-1][2],main3metricsArry[i][10],main3metricsArry[i][11],main3metricsArry[i][12]]);
+    }
+  }
+
+  //  in second loop we extract the OEE for ProcessGroup
+  machineMetircsArray[0].push('Mach.OEE');
+  var machineNameList = machineMetircsArray.map(function(value,index) { return value[1]; });
+
+  for (i = 1 ; i < oeeNumbers ; i++){
+    text = oeeArry[i][2];
+    if (text.substring(text.length-5, text.length) == "Total"){
+      for(j=0; j < machineMetircsArray.length ; j++){
+        if (oeeArry[i-1][1] == machineMetircsArray[j][0] && oeeArry[i-1][2] == machineMetircsArray[j][1]){
+          machineMetircsArray[j].push(oeeArry[i][6]);
+        }
+        
+      }
+    }
+  }
+  //  adding blank item to array for align 
+  for (i=0 ; i < machineMetircsArray.length ; i++){
+    if (machineMetircsArray[i].length < 6){
+      machineMetircsArray[i].push("");
+    }
+  }
+
+
+  // finding 5 lowest and highest mechines by availibility
+  var auxArray = machineMetircsArray.slice(1);
+  for (i = auxArray.length - 1 ; i >= 0; i--){   // in this loop we remove the blank process group and the ones with zero availibility
+    if(auxArray[i][0] == "" || auxArray[i][3] == 0){
+      auxArray.splice(i, 1);   // remove i th enlement 
+    }
+  }
+
+  // finding 5 lowest availibility --------------
+  auxArray.sort((a,b) => a[3] - b[3]) // sorting by availibility ascending
+  ss.getRange("AH8").setValue('Lowest Availability by machine');
+  ss.getRange(9, 33,1,6).setValues(machineMetircsArray.slice(0,1));
+  ss.getRange(10, 33,5,6).setValues(auxArray.slice(0,5));
+  // finding 5 higeh availibility--------------
+  auxArray.sort((a,b) => a[3] - b[3]).reverse(); // sorting by availibility descending
+  ss.getRange("AH17").setValue('Highest Availability by machine');
+  ss.getRange(18, 33,1,6).setValues(machineMetircsArray.slice(0,1));
+  ss.getRange(19, 33,5,6).setValues(auxArray.slice(0,5));
+  // finding 5 lowest OEE--------------
+  auxArray.sort((a,b) => a[5] - b[5]) // sorting by availibility ascending
+  ss.getRange("AH26").setValue('Lowest OEE by machine');
+  ss.getRange(27, 33,1,6).setValues(machineMetircsArray.slice(0,1));
+  ss.getRange(28, 33,5,6).setValues(auxArray.slice(0,5));
+  // finding 5 higeh OEE--------------
+  auxArray.sort((a,b) => a[5] - b[5]).reverse(); // sorting by availibility descending
+  ss.getRange("AH35").setValue('Highest OEE by machine');
+  ss.getRange(36, 33,1,6).setValues(machineMetircsArray.slice(0,1));
+  ss.getRange(37, 33,5,6).setValues(auxArray.slice(0,5));
+
+  //  writing the all Mertics of process Group
+
+  ss.getRange("AH44").setValue('All metrics for all machines');
+  var xPositionForMachine = 45;
+  var yPositionForMachine = 33;
+  //  writing the all Mertics of process Group
+  ss.getRange(xPositionForMachine, yPositionForMachine, machineMetircsArray.length,machineMetircsArray[0].length).setValues(machineMetircsArray);
+
+  // ------------  Downtime for LTC Machinces
+  var arrayLTCmachine = [];
+  for (i = 0 ; i < machineMetircsArray.length ; i++){ // collect info. of LTC machine
+      if(machineMetircsArray[i][1].substring(0,3) == 'LTC'){
+          arrayLTCmachine.push(machineMetircsArray[i])
+      }
+  }
+  var downtimesArray = spreadsheet.getRange("BB6:BD").getValues();
+  for (i = 2; true; i++){
+    if(downtimesArray[i][0] == ''&& downtimesArray[i][1] == ''&& downtimesArray[i][2] == ''){
+      break;
+    }
+  }
+  downtimesArray = downtimesArray.slice(0,i);
+  for (i = 0; i < arrayLTCmachine.length; i++){
+    auxArray = [];
+    var sum = 0;
+    for (j = 0; j < downtimesArray.length; j++){
+      if(downtimesArray[j][0] == arrayLTCmachine[i][1] && downtimesArray[j][1] != ''){
+        auxArray.push([downtimesArray[j][1], downtimesArray[j][2]]);
+        sum += downtimesArray[j][2];
+      }
+    }
+    for(var k = auxArray.length ; k < 3; k++){ //align auxArray
+      auxArray.push(['',0]);
+    }
+    auxArray.sort((a,b) => a[1] - b[1]).reverse();
+    if (sum == 0){
+      arrayLTCmachine[i].push('', 0, '', 0, '', 0, '', 0, '', 0, '', 0);
+    }
+    else{
+      arrayLTCmachine[i].push(auxArray[0][0], arrayLTCmachine[i][3]*auxArray[0][1]/sum,
+                              auxArray[1][0], arrayLTCmachine[i][3]*auxArray[1][1]/sum,
+                                    'others', arrayLTCmachine[i][3]*(sum - auxArray[0][1] - auxArray[1][1])/sum,
+                              auxArray[0][0], arrayLTCmachine[i][5]*auxArray[0][1]/sum,
+                              auxArray[1][0], arrayLTCmachine[i][5]*auxArray[1][1]/sum,
+                                    'others', arrayLTCmachine[i][5]*(sum - auxArray[0][1] - auxArray[1][1])/sum);
+    }
+  }
+  arrayLTCmachine.sort((a,b) => a[3] - b[3]);
+  j = 0;
+  auxArray = [['','','','5 Lowest LTC machine by Avalability', '','','','']];
+  auxArray.push(['Machine','Availability','firstDowntime','percent1', 'secondDowntime','percent2','ThirdDowntime','percent3']);
+  for(i = 0; i < arrayLTCmachine.length ; i++){
+    if (arrayLTCmachine[i][3] > 0.08){
+      auxArray.push([arrayLTCmachine[i][1], arrayLTCmachine[i][3], arrayLTCmachine[i][6],arrayLTCmachine[i][7],
+      arrayLTCmachine[i][8], arrayLTCmachine[i][9], arrayLTCmachine[i][10], arrayLTCmachine[i][11]]);
+      if(auxArray[j+2][3] == 0) {auxArray[j+2][3] = auxArray[j+2][1];}
+      if(auxArray[j+2][7] < 0.05) {auxArray[j+2][6] = '';}
+      j += 1;
+      if (j == 5){
+        ss.getRange(5, 58, auxArray.length,auxArray[0].length).setValues(auxArray);
+        break;
+      }
+    }
+  }
+  arrayLTCmachine.sort((a,b) => a[5] - b[5]);
+  j = 0;
+  auxArray = [['','','','5 Lowest LTC machine by OEE', '','','','']];
+  auxArray.push(['Machine','OEE','firstDowntime','percent1', 'secondDowntime','percent2','ThirdDowntime','percent3']);
+  for(i = 0; i < arrayLTCmachine.length ; i++){
+    if (arrayLTCmachine[i][5] > 0.08){
+      auxArray.push([arrayLTCmachine[i][1], arrayLTCmachine[i][5], arrayLTCmachine[i][12], arrayLTCmachine[i][13],
+      arrayLTCmachine[i][14], arrayLTCmachine[i][15], arrayLTCmachine[i][16], arrayLTCmachine[i][17]]);
+      if(auxArray[j+2][3] == 0) {auxArray[j+2][3] = auxArray[j+2][1];}
+      if(auxArray[j+2][7] < 0.05) {
+        auxArray[j+2][6] = '';}
+      j += 1;
+      if (j == 5){
+        ss.getRange(13, 58, auxArray.length,auxArray[0].length).setValues(auxArray);
+        break;
+      }
+    }
+  }
+  // ------------  Production count for LTC Machinces
+  for (i = 0; i < arrayLTCmachine.length; i++){
+    sw = 0;
+    for(j = 0; j < oeeArry.length; j++){
+      if(arrayLTCmachine[i][1] == oeeArry[j][2].substring(0,arrayLTCmachine[i][1].length) && 
+          oeeArry[j][2].substring(oeeArry[j][2].length-5, oeeArry[j][2].length) == "Total"){
+            arrayLTCmachine[i].push(oeeArry[j][4], oeeArry[j][5], oeeArry[j][6]);
+            sw = 1;
+            break;
+      }
+    }
+    if (sw == 0){
+      arrayLTCmachine[i].push('','','');
+    }
+  }
+  var machineLTCs = arrayLTCmachine.map(function(val) {return [val[1], Math.round(val[18]), val[19], Math.round(val[20]*100)];});
+  machineLTCs.unshift(['Machine', 'Target count', 'Part count', 'OEE']);
+  ss.getRange(5, 67, machineLTCs.length,machineLTCs[0].length).setValues(machineLTCs);
+
+
+}
+
+
+
+//--------------------------------------------------------------------------------------------------------
+//-------------------------------      Inserting Downtime Pivot Table      -------------------------------
+function insertingDowntimePivotTable() {
+
+  var dataDumpSheet = SpreadsheetApp.getActive().getSheetByName('Data Dump');
+  var metricsSheet  = SpreadsheetApp.getActive().getSheetByName('Metrics');
+  var lastRow = dataDumpSheet.getLastRow()
+  var visibleItemsForTagName=[];
+  var cVals = dataDumpSheet.getRange(2, 8, lastRow - 1, 1).getValues();
+  for (i=0 ; i < lastRow - 2 ; i++){
+    var auxVariable = cVals[i][0]
+    if (!(visibleItemsForTagName.includes(auxVariable)))
+      if ((auxVariable != "") && (auxVariable != "Maintenance PM") && (auxVariable != "Meeting/BBB") && 
+         (auxVariable != "No Production Scheduled") && (auxVariable != "Vacation")){
+        visibleItemsForTagName.push(auxVariable)
+    }
+  }
+  var sourceData = dataDumpSheet.getRange('A1:BC');   // selecting the range of data form Data Dump sheet
+  var pivotTable = metricsSheet.getRange('AT5').createPivotTable(sourceData);
+  var pivotValue = pivotTable.addPivotValue(47, SpreadsheetApp.PivotTableSummarizeFunction.SUM);
+  var pivotGroup = pivotTable.addRowGroup(7);
+  pivotGroup.showTotals(false)
+  .showRepeatedLabels();
+  pivotGroup = pivotTable.addRowGroup(8);
+  pivotGroup.showTotals(false);
+  var criteria = SpreadsheetApp.newFilterCriteria()
+  .setVisibleValues(['planned', 'unplanned', 'waiting'])
+  .build();
+  pivotTable.addFilter(7, criteria);
+  criteria = SpreadsheetApp.newFilterCriteria()
+  .setVisibleValues(visibleItemsForTagName)
+  .build();
+  pivotTable.addFilter(8, criteria);
+};
+//--------------------------------------------------------------------------------------------------------
+//---------------------------------------      Findning Downtimes      -----------------------------------
+function top5downtime(){
+// it should be run after Inserting Downtime Pivot Table function
+  var metricsSheet  = SpreadsheetApp.getActive().getSheetByName('Metrics');
+  var downtimesArray = metricsSheet.getRange(6, 47, 50, 2).getValues();
+  downtimesArray.sort((a,b) => a[1] - b[1]).reverse();
+  for (var i=0 ; 50 ; i++){
+    if (downtimesArray[i][0] == "") break;
+    downtimesArray[i][1] /= 60;
+  }
+  downtimesArray.unshift(['downtime', 'time (hour)']);
+  metricsSheet.getRange(5, 50,6,2).setValues(downtimesArray.slice(0,6));
+};
+//--------------------------------------------------------------------------------------------------------
+//-----------------------------------------      Findning Trend      -------------------------------------
+function trend(){
+  var dataDumpSheet = SpreadsheetApp.getActive().getSheetByName('Data Dump');
+  var metricsSheet  = SpreadsheetApp.getActive().getSheetByName('Metrics');
+  var trendSheet    = SpreadsheetApp.getActive().getSheetByName('Trend');
+  var newGe = dataDumpSheet.getRange('E2').getValue();
+  var oldGe = trendSheet.getRange('A2').getValue();
+  if (newGe > oldGe){
+    var colNum = 10;
+    var shiftinfo = metricsSheet.getRange('AA6:AE6').getValues();
+    for (var i=1 ; i<5 ; i++){
+      shiftinfo[0][i] = Math.round(shiftinfo[0][i]*100)
+    }
+    if (shiftinfo[0][0] == 'Day'){
+      // adding a new row
+      var auxArray = trendSheet.getRange('A2:M1000').getValues();
+      trendSheet.getRange('A3:M1001').setValues(auxArray);
+      trendSheet.getRange('A2:M2').clear();
+      colNum = 5;
+      trendSheet.getRange('D2').setValue(metricsSheet.getRange('C3').getValue());
+    }
+    trendSheet.getRange('A2').setValue(newGe);
+    trendSheet.getRange(2,colNum,1,4).setValues([shiftinfo[0].slice(1,5)]);
+  }
+};
+//--------------------------------------------------------------------------------------------------------
+//-------------------------     Insert Downtime-Machine Pivot Table     ----------------------------------
+function insertDowntime_machineTable() {
+// this function insert a pivot table contain machines and the time for evry tag that shows down times
+  var metricsSheet = SpreadsheetApp.getActive().getSheetByName('Metrics');
+  var dataDumpSheet = SpreadsheetApp.getActive().getSheetByName('Data Dump');
+
+  var lastRow = dataDumpSheet.getLastRow()
+  var visibleItemsForTagName=[];
+  var cVals = dataDumpSheet.getRange(2, 8, lastRow - 1, 1).getValues();
+  for (var i=0 ; i < lastRow - 2 ; i++){
+    var auxVariable = cVals[i][0]
+    if (!(visibleItemsForTagName.includes(auxVariable)))
+      if (auxVariable != "No Production Scheduled"){
+        visibleItemsForTagName.push(auxVariable)
+    }
+  }
+
+
+  var sourceData = dataDumpSheet.getRange('A1:BC');
+  var pivotTable = metricsSheet.getRange('BB5').createPivotTable(sourceData);
+  var pivotValue = pivotTable.addPivotValue(47, SpreadsheetApp.PivotTableSummarizeFunction.SUM);
+  var pivotGroup = pivotTable.addRowGroup(3);
+  pivotGroup.showTotals(false)
+  .showRepeatedLabels();
+  pivotGroup = pivotTable.addRowGroup(8);
+  pivotGroup.showTotals(false);
+  criteria = SpreadsheetApp.newFilterCriteria()
+  .setVisibleValues(visibleItemsForTagName)
+  .build();
+  pivotTable.addFilter(8, criteria);
+
+};
